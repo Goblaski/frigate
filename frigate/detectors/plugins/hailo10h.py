@@ -1,7 +1,9 @@
 import logging
 import os
+import subprocess
 import threading
 import urllib.request
+from dataclasses import dataclass
 from functools import partial
 from typing import Dict, List, Optional, Tuple
 
@@ -12,9 +14,7 @@ from typing_extensions import Literal
 
 from frigate.const import MODEL_CACHE_DIR
 from frigate.detectors.detection_api import DetectionApi
-from frigate.detectors.detector_config import (
-    BaseDetectorConfig,
-)
+from frigate.detectors.detector_config import BaseDetectorConfig
 from frigate.object_detection.util import RequestStore, ResponseStore
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,84 @@ def preprocess_tensor(image: np.ndarray, model_w: int, model_h: int) -> np.ndarr
 DETECTOR_KEY = "hailo10h"
 H10H_DEFAULT_MODEL = "yolov6n.hef"
 H10H_DEFAULT_URL = "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov6n.hef"
+SUPPORTED_DEVICE_ARCHITECTURES = {"HAILO10H"}
+DEFAULT_INFERENCE_TIMEOUT = 1.0
+
+
+@dataclass(frozen=True)
+class HailoDeviceInfo:
+    architecture: Optional[str]
+    firmware_version: Optional[str]
+    raw_output: str
+
+
+
+def detect_hailo_device_info() -> HailoDeviceInfo:
+    """Probe the installed Hailo device via hailortcli.
+
+    On Raspberry Pi 5 / Trixie with an AI HAT+ 2 we expect the reported
+    architecture to be HAILO10H. The helper is intentionally isolated so it can
+    be unit-tested and reused by future integration checks.
+    """
+    try:
+        result = subprocess.run(
+            ["hailortcli", "fw-control", "identify"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "hailortcli was not found. Install HailoRT before using the hailo10h detector."
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(f"Failed to probe Hailo device information: {exc}") from exc
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or "unknown hailortcli error"
+        raise RuntimeError(f"hailortcli fw-control identify failed: {stderr}")
+
+    architecture = None
+    firmware_version = None
+
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if line.startswith("Device Architecture:"):
+            architecture = line.split(":", 1)[1].strip().upper()
+        elif line.startswith("Firmware Version:"):
+            firmware_version = line.split(":", 1)[1].strip()
+
+    return HailoDeviceInfo(
+        architecture=architecture,
+        firmware_version=firmware_version,
+        raw_output=result.stdout,
+    )
+
+
+
+def validate_hailo10h_device(device_info: HailoDeviceInfo) -> None:
+    if device_info.architecture not in SUPPORTED_DEVICE_ARCHITECTURES:
+        found = device_info.architecture or "unknown"
+        raise RuntimeError(
+            "The hailo10h detector requires a Hailo-10H device, but "
+            f"hailortcli reported '{found}'."
+        )
+
+
+
+def get_model_hw_from_input_shape(input_shape: Tuple[int, ...]) -> Tuple[int, int]:
+    if len(input_shape) != 3:
+        raise ValueError(
+            f"Unsupported Hailo input shape {input_shape!r}. Expected a 3D tensor."
+        )
+
+    height, width, channels = input_shape
+    if channels != 3:
+        raise ValueError(
+            f"Unsupported Hailo input shape {input_shape!r}. Expected 3 channels."
+        )
+
+    return height, width
 
 
 # ----------------- HailoAsyncInference Class ----------------- #
@@ -71,8 +149,11 @@ class HailoAsyncInference:
                 HailoSchedulingAlgorithm,
                 VDevice,
             )
-        except ModuleNotFoundError:
-            pass
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "hailo_platform is not installed. Install the HailoRT Python wheel "
+                "before using the hailo10h detector."
+            ) from exc
 
         self.input_store = input_store
         self.output_store = output_store
@@ -214,6 +295,8 @@ class HailoDetector(DetectionApi):
         )
         self.output_type = "FLOAT32"
         self.set_path_and_url(detector_config.model.path)
+        self.device_info = detect_hailo_device_info()
+        validate_hailo10h_device(self.device_info)
         self.working_model_path = self.check_and_prepare()
 
         self.batch_size = 1
@@ -229,6 +312,7 @@ class HailoDetector(DetectionApi):
                 self.batch_size,
             )
             self.input_shape = self.inference_engine.get_input_shape()
+            self.validate_model_contract()
             logger.debug(f"[INIT] Model input shape: {self.input_shape}")
             self.inference_thread = threading.Thread(
                 target=self.inference_engine.run, daemon=True
@@ -299,6 +383,19 @@ class HailoDetector(DetectionApi):
                 raise FileNotFoundError(f"Model file not found at: {self.model_path}")
         return cached_model_path
 
+    def validate_model_contract(self) -> None:
+        model_height, model_width = get_model_hw_from_input_shape(self.input_shape)
+
+        if self.model_height not in (None, model_height):
+            raise ValueError(
+                f"Configured model height {self.model_height} does not match the HEF input height {model_height}."
+            )
+
+        if self.model_width not in (None, model_width):
+            raise ValueError(
+                f"Configured model width {self.model_width} does not match the HEF input width {model_width}."
+            )
+
     def detect_raw(self, tensor_input):
         tensor_input = self.preprocess(tensor_input)
 
@@ -308,7 +405,9 @@ class HailoDetector(DetectionApi):
         request_id = self.input_store.put(tensor_input)
 
         try:
-            _, infer_results = self.response_store.get(request_id, timeout=1.0)
+            _, infer_results = self.response_store.get(
+                request_id, timeout=DEFAULT_INFERENCE_TIMEOUT
+            )
         except TimeoutError:
             logger.error(
                 f"Timeout waiting for inference results for request {request_id}"
@@ -323,6 +422,8 @@ class HailoDetector(DetectionApi):
 
         if isinstance(infer_results, list) and len(infer_results) == 1:
             infer_results = infer_results[0]
+        elif isinstance(infer_results, dict):
+            infer_results = list(infer_results.values())
 
         threshold = 0.4
         all_detections = []
@@ -351,9 +452,8 @@ class HailoDetector(DetectionApi):
 
     def preprocess(self, image):
         if isinstance(image, np.ndarray):
-            processed = preprocess_tensor(
-                image, self.input_shape[1], self.input_shape[0]
-            )
+            model_height, model_width = get_model_hw_from_input_shape(self.input_shape)
+            processed = preprocess_tensor(image, model_width, model_height)
             return np.expand_dims(processed, axis=0)
         else:
             raise ValueError("Unsupported image format for preprocessing")
