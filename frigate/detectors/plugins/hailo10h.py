@@ -46,9 +46,12 @@ def preprocess_tensor(image: np.ndarray, model_w: int, model_h: int) -> np.ndarr
 
 # ----------------- Global Constants ----------------- #
 DETECTOR_KEY = "hailo10h"
+HAILO10H_ARCH = "hailo10h"
+HAILO10H_ARCH_CAPS = "HAILO10H"
+SHARED_VDEVICE_GROUP_ID = "SHARED"
 H10H_DEFAULT_MODEL = "yolov6n.hef"
 H10H_DEFAULT_URL = "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v5.2.0/hailo10h/yolov6n.hef"
-SUPPORTED_DEVICE_ARCHITECTURES = {"HAILO10H"}
+SUPPORTED_DEVICE_ARCHITECTURES = {HAILO10H_ARCH_CAPS}
 DEFAULT_INFERENCE_TIMEOUT = 1.0
 
 
@@ -108,7 +111,7 @@ def validate_hailo10h_device(device_info: HailoDeviceInfo) -> None:
         found = device_info.architecture or "unknown"
         raise RuntimeError(
             "The hailo10h detector requires a Hailo-10H device, but "
-            f"hailortcli reported '{found}'."
+            f"hailortcli reported '{found}'. Expected {HAILO10H_ARCH_CAPS}."
         )
 
 
@@ -160,6 +163,7 @@ class HailoAsyncInference:
 
         params = VDevice.create_params()
         params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+        params.group_id = SHARED_VDEVICE_GROUP_ID
 
         self.hef = HEF(hef_path)
         self.target = VDevice(params)

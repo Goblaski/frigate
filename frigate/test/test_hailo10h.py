@@ -8,6 +8,8 @@ from pydantic import parse_obj_as
 from frigate.config import DetectorConfig
 from frigate.detectors.plugins.hailo10h import (
     DEFAULT_INFERENCE_TIMEOUT,
+    HAILO10H_ARCH_CAPS,
+    SHARED_VDEVICE_GROUP_ID,
     HailoDeviceInfo,
     HailoDetector,
     detect_hailo_device_info,
@@ -51,6 +53,21 @@ class TestHailo10HHelpers(unittest.TestCase):
             get_model_hw_from_input_shape((320, 320, 1))
 
         self.assertEqual(get_model_hw_from_input_shape((320, 320, 3)), (320, 320))
+
+
+class TestHailo10HUpstreamAlignment(unittest.TestCase):
+    def test_validate_hailo10h_device_uses_upstream_arch_constant(self):
+        with self.assertRaisesRegex(RuntimeError, HAILO10H_ARCH_CAPS):
+            validate_hailo10h_device(
+                HailoDeviceInfo(
+                    architecture="HAILO8",
+                    firmware_version="4.23.0",
+                    raw_output="",
+                )
+            )
+
+    def test_shared_vdevice_group_constant_matches_hailo_apps(self):
+        self.assertEqual(SHARED_VDEVICE_GROUP_ID, "SHARED")
 
 
 class TestHailo10HDetector(unittest.TestCase):
