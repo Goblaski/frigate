@@ -21,6 +21,28 @@ install_legacy_hailort() {
     wget -P /wheels/ "https://github.com/frigate-nvr/hailort/releases/download/v${hailo_version}/hailort-${hailo_version}-cp311-cp311-linux_${arch}.whl"
 }
 
+resolve_deb_version() {
+    local package_name="$1"
+    local version_prefix="$2"
+
+    if [[ -z "${version_prefix}" ]]; then
+        return 0
+    fi
+
+    local resolved_version
+    resolved_version=$(apt-cache madison "${package_name}" | awk '{print $3}' | grep -E "^${version_prefix}([.+~-].*)?$" | head -n1 || true)
+
+    if [[ -z "${resolved_version}" ]]; then
+        echo "Unable to resolve ${package_name} version prefix '${version_prefix}'." >&2
+        echo "Available versions:" >&2
+        apt-cache madison "${package_name}" >&2 || true
+        exit 1
+    fi
+
+    printf '%s' "${resolved_version}"
+}
+
+
 install_hailo10h_userspace() {
     if [[ "${TARGETARCH}" != "arm64" ]]; then
         echo "hailo10h userspace installation is only supported on arm64 builds."
@@ -52,13 +74,17 @@ EOF
     mkdir -p /rootfs /tmp/hailo-debs
     cd /tmp/hailo-debs
 
+    hailort_deb_version=$(resolve_deb_version "hailort" "${hailo_version}")
+    python_hailort_deb_version=$(resolve_deb_version "python3-hailort" "${hailo_version}")
+
     packages=(
-        "hailort=${hailo_version}*"
-        "python3-hailort=${hailo_version}*"
+        "hailort=${hailort_deb_version}"
+        "python3-hailort=${python_hailort_deb_version}"
     )
 
     if [[ -n "${hailo_tappas_core_version}" ]]; then
-        packages+=("hailo-tappas-core=${hailo_tappas_core_version}*")
+        tappas_core_deb_version=$(resolve_deb_version "hailo-tappas-core" "${hailo_tappas_core_version}")
+        packages+=("hailo-tappas-core=${tappas_core_deb_version}")
     fi
 
     for package in "${packages[@]}"; do
