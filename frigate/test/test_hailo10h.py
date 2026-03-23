@@ -1,7 +1,12 @@
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import cv2
 import numpy as np
 from pydantic import parse_obj_as
 
@@ -16,6 +21,80 @@ from frigate.detectors.plugins.hailo10h import (
     get_model_hw_from_input_shape,
     validate_hailo10h_device,
 )
+
+
+DEBUG_VIDEO_PATH = Path(__file__).resolve().parents[1] / "debug" / "car-stopping.mp4"
+DEBUG_RESULTS_PATH = DEBUG_VIDEO_PATH.with_name("car-stopping.hailo10h.json")
+
+
+def run_hailo10h_detector_on_video(video_path: Path, output_path: Path) -> None:
+    cfg_payload = {
+        "type": "hailo10h",
+        "device": os.environ.get("FRIGATE_HAILO10H_DEVICE", "PCIe"),
+        "model": {
+            "width": int(os.environ.get("FRIGATE_HAILO10H_MODEL_WIDTH", "320")),
+            "height": int(os.environ.get("FRIGATE_HAILO10H_MODEL_HEIGHT", "320")),
+        },
+    }
+
+    model_path = os.environ.get("FRIGATE_HAILO10H_MODEL_PATH")
+    if model_path:
+        cfg_payload["model"]["path"] = model_path
+
+    detector = HailoDetector(parse_obj_as(DetectorConfig, cfg_payload))
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        detector.close()
+        raise RuntimeError(f"Unable to open debug video at {video_path}")
+
+    max_frames = int(os.environ.get("FRIGATE_HAILO10H_VIDEO_MAX_FRAMES", "0"))
+    frames = []
+
+    try:
+        frame_index = 0
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+
+            raw = detector.detect_raw(frame)
+            detections = []
+            for det in raw.tolist():
+                if len(det) != 6 or det[1] <= 0:
+                    continue
+                detections.append(
+                    {
+                        "class_id": int(det[0]),
+                        "score": float(det[1]),
+                        "bbox": [
+                            float(det[2]),
+                            float(det[3]),
+                            float(det[4]),
+                            float(det[5]),
+                        ],
+                    }
+                )
+
+            frames.append({"frame_index": frame_index, "detections": detections})
+            frame_index += 1
+
+            if max_frames and frame_index >= max_frames:
+                break
+    finally:
+        cap.release()
+        detector.close()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(
+            {
+                "video": str(video_path),
+                "frames_processed": len(frames),
+                "results": frames,
+            },
+            indent=2,
+        )
+    )
 
 
 class TestHailo10HHelpers(unittest.TestCase):
@@ -136,6 +215,62 @@ class TestHailo10HDetector(unittest.TestCase):
         self.assertEqual(result.shape, (20, 6))
         self.assertEqual(result[0][0], 0)
         self.assertAlmostEqual(float(result[0][1]), 0.95, places=5)
+
+
+class TestHailo10HVideoHelpers(unittest.TestCase):
+    @patch.dict(os.environ, {"FRIGATE_HAILO10H_VIDEO_MAX_FRAMES": "2"}, clear=False)
+    @patch("frigate.test.test_hailo10h.cv2.VideoCapture")
+    @patch("frigate.test.test_hailo10h.HailoDetector")
+    def test_run_hailo10h_detector_on_video_writes_results(
+        self, mock_detector_cls, mock_video_capture
+    ):
+        mock_detector = Mock()
+        mock_detector.detect_raw.side_effect = [
+            np.array([[1, 0.9, 0.1, 0.2, 0.3, 0.4]] + [[0, 0, 0, 0, 0, 0]] * 19),
+            np.zeros((20, 6), dtype=np.float32),
+        ]
+        mock_detector_cls.return_value = mock_detector
+
+        mock_cap = Mock()
+        mock_cap.isOpened.return_value = True
+        mock_cap.read.side_effect = [
+            (True, np.zeros((320, 320, 3), dtype=np.uint8)),
+            (True, np.zeros((320, 320, 3), dtype=np.uint8)),
+            (False, None),
+        ]
+        mock_video_capture.return_value = mock_cap
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = Path(tmpdir) / "car-stopping.mp4"
+            video_path.write_bytes(b"fake")
+            output_path = Path(tmpdir) / "car-stopping.hailo10h.json"
+
+            run_hailo10h_detector_on_video(video_path, output_path)
+
+            payload = json.loads(output_path.read_text())
+            self.assertEqual(payload["video"], str(video_path))
+            self.assertEqual(payload["frames_processed"], 2)
+            self.assertEqual(payload["results"][0]["detections"][0]["class_id"], 1)
+            mock_detector.close.assert_called_once()
+            mock_cap.release.assert_called_once()
+
+
+class TestHailo10HVideo(unittest.TestCase):
+    @unittest.skipUnless(
+        os.environ.get("FRIGATE_RUN_HAILO10H_VIDEO_TEST") == "1",
+        "Set FRIGATE_RUN_HAILO10H_VIDEO_TEST=1 to run the Hailo-10H debug video test.",
+    )
+    def test_run_detector_on_debug_video_and_store_results(self):
+        if not DEBUG_VIDEO_PATH.exists():
+            self.skipTest(f"Debug video not found: {DEBUG_VIDEO_PATH}")
+
+        run_hailo10h_detector_on_video(DEBUG_VIDEO_PATH, DEBUG_RESULTS_PATH)
+
+        self.assertTrue(DEBUG_RESULTS_PATH.exists())
+        payload = json.loads(DEBUG_RESULTS_PATH.read_text())
+        self.assertEqual(payload["video"], str(DEBUG_VIDEO_PATH))
+        self.assertGreater(payload["frames_processed"], 0)
+        self.assertIn("results", payload)
 
 
 if __name__ == "__main__":
