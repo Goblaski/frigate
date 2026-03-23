@@ -316,15 +316,16 @@ class HailoDetector(DetectionApi):
                 self.batch_size,
             )
             self.input_shape = self.inference_engine.get_input_shape()
-            self.validate_model_contract()
-            logger.debug(f"[INIT] Model input shape: {self.input_shape}")
-            self.inference_thread = threading.Thread(
-                target=self.inference_engine.run, daemon=True
-            )
-            self.inference_thread.start()
         except Exception as e:
             logger.error(f"[INIT] Failed to initialize HailoAsyncInference: {e}")
             raise
+
+        self.validate_model_contract()
+        logger.debug(f"[INIT] Model input shape: {self.input_shape}")
+        self.inference_thread = threading.Thread(
+            target=self.inference_engine.run, daemon=True
+        )
+        self.inference_thread.start()
 
     def set_path_and_url(self, path: str = None):
         if not path:

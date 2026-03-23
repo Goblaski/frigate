@@ -71,10 +71,11 @@ class TestHailo10HUpstreamAlignment(unittest.TestCase):
 
 
 class TestHailo10HDetector(unittest.TestCase):
+    @patch("frigate.detectors.plugins.hailo10h.logger.error")
     @patch("frigate.detectors.plugins.hailo10h.detect_hailo_device_info")
     @patch("frigate.detectors.plugins.hailo10h.HailoAsyncInference")
     def test_init_rejects_config_dimensions_that_do_not_match_hef(
-        self, mock_engine_cls, mock_device_info
+        self, mock_engine_cls, mock_device_info, mock_logger_error
     ):
         mock_device_info.return_value = HailoDeviceInfo(
             architecture="HAILO10H",
@@ -100,6 +101,8 @@ class TestHailo10HDetector(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Configured model width 640"):
             HailoDetector(cfg)
+
+        mock_logger_error.assert_not_called()
 
     def test_detect_raw_accepts_dict_outputs(self):
         detector = object.__new__(HailoDetector)
