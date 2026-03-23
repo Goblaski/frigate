@@ -23,8 +23,16 @@ from frigate.detectors.plugins.hailo10h import (
 )
 
 
-DEBUG_VIDEO_PATH = Path(__file__).resolve().parents[1] / "debug" / "car-stopping.mp4"
+DEBUG_VIDEO_PATH = Path(__file__).resolve().parents[2] / "debug" / "car-stopping.mp4"
 DEBUG_RESULTS_PATH = DEBUG_VIDEO_PATH.with_name("car-stopping.hailo10h.json")
+
+
+def get_hailo10h_runtime_error() -> str | None:
+    try:
+        detect_hailo_device_info()
+        return None
+    except RuntimeError as exc:
+        return str(exc)
 
 
 def run_hailo10h_detector_on_video(video_path: Path, output_path: Path) -> None:
@@ -263,6 +271,10 @@ class TestHailo10HVideo(unittest.TestCase):
     def test_run_detector_on_debug_video_and_store_results(self):
         if not DEBUG_VIDEO_PATH.exists():
             self.skipTest(f"Debug video not found: {DEBUG_VIDEO_PATH}")
+
+        runtime_error = get_hailo10h_runtime_error()
+        if runtime_error is not None:
+            self.skipTest(f"Hailo-10H runtime unavailable: {runtime_error}")
 
         run_hailo10h_detector_on_video(DEBUG_VIDEO_PATH, DEBUG_RESULTS_PATH)
 
