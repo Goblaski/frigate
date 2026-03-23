@@ -193,7 +193,15 @@ RUN pip3 wheel --wheel-dir=/wheels -r /requirements-wheels.txt && \
     fi
 
 # Install HailoRT & Wheels
+ARG HAILO_VARIANT=hailo8
+ARG HAILO_VERSION=4.21.0
+ARG HAILO_TAPPAS_CORE_VERSION=""
+ARG HAILO_RPI_SUITE=trixie
 RUN --mount=type=bind,source=docker/main/install_hailort.sh,target=/deps/install_hailort.sh \
+    HAILO_VARIANT=${HAILO_VARIANT} \
+    HAILO_VERSION=${HAILO_VERSION} \
+    HAILO_TAPPAS_CORE_VERSION=${HAILO_TAPPAS_CORE_VERSION} \
+    HAILO_RPI_SUITE=${HAILO_RPI_SUITE} \
     /deps/install_hailort.sh
 
 # Collect deps in a single layer
