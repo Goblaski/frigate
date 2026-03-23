@@ -74,12 +74,12 @@ EOF
     mkdir -p /rootfs /tmp/hailo-debs
     cd /tmp/hailo-debs
 
-    hailort_deb_version=$(resolve_deb_version "hailort" "${hailo_version}")
-    python_hailort_deb_version=$(resolve_deb_version "python3-hailort" "${hailo_version}")
+    h10_hailort_deb_version=$(resolve_deb_version "h10-hailort" "${hailo_version}")
+    h10_pyhailort_deb_version=$(resolve_deb_version "h10-pyhailort" "${hailo_version}")
 
     packages=(
-        "hailort=${hailort_deb_version}"
-        "python3-hailort=${python_hailort_deb_version}"
+        "h10-hailort=${h10_hailort_deb_version}"
+        "h10-pyhailort=${h10_pyhailort_deb_version}"
     )
 
     if [[ -n "${hailo_tappas_core_version}" ]]; then
